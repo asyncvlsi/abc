@@ -54,6 +54,7 @@ build/
 tags
 
 /libabc.a
+/libabc.so
 /abc
 
 /arch_flags
