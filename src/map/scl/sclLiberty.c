@@ -17,6 +17,13 @@
   Revision    [$Id: sclLiberty.c,v 1.0 2012/08/24 00:00:00 alanmi Exp $]
 
 ***********************************************************************/
+#include <string.h>
+#ifdef _WIN32
+#include <shlwapi.h>
+#pragma comment(lib, "shlwapi.lib")
+#else 
+#include <fnmatch.h>
+#endif
 
 #include "sclLib.h"
 #include "misc/st/st.h"
@@ -42,20 +49,20 @@ typedef enum {
 typedef struct Scl_Pair_t_ Scl_Pair_t;
 struct Scl_Pair_t_
 {
-    int             Beg;          // item beginning
-    int             End;          // item end
+    long            Beg;          // item beginning
+    long            End;          // item end
 };
 
 typedef struct Scl_Item_t_ Scl_Item_t;
 struct Scl_Item_t_
 {
     int             Type;         // Scl_LibertyType_t
-    int             iLine;        // file line where the item's spec begins
+    long            iLine;        // file line where the item's spec begins
     Scl_Pair_t      Key;          // key part
     Scl_Pair_t      Head;         // head part 
     Scl_Pair_t      Body;         // body part
-    int             Next;         // next item in the list 
-    int             Child;        // first child item 
+    long            Next;         // next item in the list 
+    long            Child;        // first child item 
 };
 
 typedef struct Scl_Tree_t_ Scl_Tree_t;
@@ -63,22 +70,30 @@ struct Scl_Tree_t_
 {
     char *          pFileName;    // input Liberty file name
     char *          pContents;    // file contents
-    int             nContents;    // file size
-    int             nLines;       // line counter
-    int             nItems;       // number of items
-    int             nItermAlloc;  // number of items allocated
+    long            nContents;    // file size
+    long            nLines;       // line counter
+    long            nItems;       // number of items
+    long            nItermAlloc;  // number of items allocated
     Scl_Item_t *    pItems;       // the items
     char *          pError;       // the error string
     abctime         clkStart;     // beginning time
     Vec_Str_t *     vBuffer;      // temp string buffer
 };
 
+
+static inline int          Scl_LibertyGlobMatch(const char * pattern, const char * string) {
+    #ifdef _WIN32
+    return PathMatchSpec(string, pattern); // if the compiler complains, add "-lshlwapi"
+    #else
+    return fnmatch(pattern, string, 0) == 0;
+    #endif
+}
 static inline Scl_Item_t *  Scl_LibertyRoot( Scl_Tree_t * p )                                      { return p->pItems;                                                 }
-static inline Scl_Item_t *  Scl_LibertyItem( Scl_Tree_t * p, int v )                               { assert( v < p->nItems ); return v < 0 ? NULL : p->pItems + v;     }
-static inline int           Scl_LibertyCompare( Scl_Tree_t * p, Scl_Pair_t Pair, char * pStr )     { return strncmp( p->pContents+Pair.Beg, pStr, Pair.End-Pair.Beg ) || ((int)strlen(pStr) != Pair.End-Pair.Beg); }
+static inline Scl_Item_t *  Scl_LibertyItem( Scl_Tree_t * p, long v )                               { assert( v < p->nItems ); return v < 0 ? NULL : p->pItems + v;     }
+static inline long          Scl_LibertyCompare( Scl_Tree_t * p, Scl_Pair_t Pair, char * pStr )     { return strncmp( p->pContents+Pair.Beg, pStr, Pair.End-Pair.Beg ) || ((long)strlen(pStr) != Pair.End-Pair.Beg); }
 static inline void          Scl_PrintWord( FILE * pFile, Scl_Tree_t * p, Scl_Pair_t Pair )         { char * pBeg = p->pContents+Pair.Beg, * pEnd = p->pContents+Pair.End; while ( pBeg < pEnd ) fputc( *pBeg++, pFile ); }
-static inline void          Scl_PrintSpace( FILE * pFile, int nOffset )                            { int i; for ( i = 0; i < nOffset; i++ ) fputc(' ', pFile);         }
-static inline int           Scl_LibertyItemId( Scl_Tree_t * p, Scl_Item_t * pItem )                { return pItem - p->pItems;                                         }
+static inline void          Scl_PrintSpace( FILE * pFile, long nOffset )                           { long i; for ( i = 0; i < nOffset; i++ ) fputc(' ', pFile);         }
+static inline long          Scl_LibertyItemId( Scl_Tree_t * p, Scl_Item_t * pItem )                { return pItem - p->pItems;                                         }
 
 #define Scl_ItemForEachChild( p, pItem, pChild ) \
     for ( pChild = Scl_LibertyItem(p, pItem->Child); pChild; pChild = Scl_LibertyItem(p, pChild->Next) )
@@ -166,9 +181,9 @@ int Scl_LibertyParseDump( Scl_Tree_t * p, char * pFileName )
   SeeAlso     []
 
 ***********************************************************************/
-int Scl_LibertyCountItems( char * pBeg, char * pEnd )
+long Scl_LibertyCountItems( char * pBeg, char * pEnd )
 {
-    int Counter = 0;
+    long Counter = 0;
     for ( ; pBeg < pEnd; pBeg++ )
         Counter += (*pBeg == '(' || *pBeg == ':');
     return Counter;
@@ -213,11 +228,11 @@ void Scl_LibertyWipeOutComments( char * pBeg, char * pEnd )
                 }
         }
 }
-static inline int Scl_LibertyCharIsSpace( char c )
+static inline long Scl_LibertyCharIsSpace( char c )
 {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\\';
 }
-static inline int Scl_LibertySkipSpaces( Scl_Tree_t * p, char ** ppPos, char * pEnd, int fStopAtNewLine )
+static inline long Scl_LibertySkipSpaces( Scl_Tree_t * p, char ** ppPos, char * pEnd, int fStopAtNewLine )
 {
     char * pPos = *ppPos;
     for ( ; pPos < pEnd; pPos++ )
@@ -235,7 +250,7 @@ static inline int Scl_LibertySkipSpaces( Scl_Tree_t * p, char ** ppPos, char * p
     return pPos == pEnd;
 }
 // skips entry delimited by " :;(){}" and returns 1 if reached the end
-static inline int Scl_LibertySkipEntry( char ** ppPos, char * pEnd )
+static inline long Scl_LibertySkipEntry( char ** ppPos, char * pEnd )
 {
     char * pPos = *ppPos;
     if ( *pPos == '\"' )
@@ -262,30 +277,42 @@ static inline int Scl_LibertySkipEntry( char ** ppPos, char * pEnd )
 // finds the matching closing symbol
 static inline char * Scl_LibertyFindMatch( char * pPos, char * pEnd )
 {
-    int Counter = 0;
+    long Counter = 0;
     assert( *pPos == '(' || *pPos == '{' );
     if ( *pPos == '(' )
     {
-        for ( ; pPos < pEnd; pPos++ )
-        {
-            if ( *pPos == '(' )
+      ++Counter;
+      ++pPos;
+      for ( ; pPos < pEnd; pPos++ )
+      {
+            // Invariant: Counter > 0.
+            if ( *pPos == '(' ) {
                 Counter++;
-            if ( *pPos == ')' )
+                continue;
+            }
+            else if ( *pPos == ')' ) {
                 Counter--;
-            if ( Counter == 0 )
-                break;
+                if ( Counter == 0 )
+                  break;
+            }
         }
     }
     else
     {
+        ++Counter;
+        ++pPos;
         for ( ; pPos < pEnd; pPos++ )
         {
-            if ( *pPos == '{' )
+            // Invariant: Counter > 0.
+            if ( *pPos == '{' ) {
                 Counter++;
-            if ( *pPos == '}' )
+                continue;
+            }
+            else if ( *pPos == '}' ) {
                 Counter--;
-            if ( Counter == 0 )
-                break;
+                if ( Counter == 0 )
+                  break;
+            }
         }
     }
     assert( *pPos == ')' || *pPos == '}' );
@@ -302,10 +329,14 @@ static inline Scl_Pair_t Scl_LibertyUpdateHead( Scl_Tree_t * p, Scl_Pair_t Head 
     char * pChar;
     for ( pChar = pBeg; pChar < pEnd; pChar++ )
     {
-        if ( *pChar == '\n' )
+        if ( *pChar == '\n' ) {
             p->nLines++;
-        if ( Scl_LibertyCharIsSpace(*pChar) )
+            // Note: Scl_LibertyCharIsSpace returns true for '\n', so we can
+            // continue here and save the call to Scl_LibertyCharIsSpace.
             continue;
+        } else if ( Scl_LibertyCharIsSpace(*pChar) ) {
+            continue;
+        }
         pLastNonSpace = pChar;
         if ( pFirstNonSpace == NULL )
             pFirstNonSpace = pChar;
@@ -356,10 +387,10 @@ char * Scl_LibertyReadString( Scl_Tree_t * p, Scl_Pair_t Pair )
     Buffer[Pair.End-Pair.Beg] = 0;
     return Buffer;
 }
-int Scl_LibertyItemNum( Scl_Tree_t * p, Scl_Item_t * pRoot, char * pName )
+long Scl_LibertyItemNum( Scl_Tree_t * p, Scl_Item_t * pRoot, char * pName )
 {
     Scl_Item_t * pItem;
-    int Counter = 0;
+    long Counter = 0;
     Scl_ItemForEachChildName( p, pRoot, pItem, pName )
         Counter++;
     return Counter;
@@ -376,7 +407,7 @@ int Scl_LibertyItemNum( Scl_Tree_t * p, Scl_Item_t * pRoot, char * pName )
   SeeAlso     []
 
 ***********************************************************************/
-int Scl_LibertyBuildItem( Scl_Tree_t * p, char ** ppPos, char * pEnd )
+long Scl_LibertyBuildItem( Scl_Tree_t * p, char ** ppPos, char * pEnd )
 {
     Scl_Item_t * pItem;
     Scl_Pair_t Key, Head, Body;
@@ -482,7 +513,7 @@ exit:
     if ( p->pError == NULL )
     {
         p->pError = ABC_ALLOC( char, 1000 );
-        sprintf( p->pError, "File \"%s\". Line %6d. Failed to parse entry \"%s\".\n", 
+        sprintf( p->pError, "File \"%s\". Line %6ld. Failed to parse entry \"%s\".\n", 
             p->pFileName, p->nLines, Scl_LibertyReadString(p, Key) );
     }
     return -1;
@@ -506,10 +537,10 @@ void Scl_LibertyFixFileName( char * pFileName )
         if ( *pHead == '>' )
             *pHead = '\\';
 }
-int Scl_LibertyFileSize( char * pFileName )
+long Scl_LibertyFileSize( char * pFileName )
 {
     FILE * pFile;
-    int nFileSize;
+    long nFileSize;
     pFile = fopen( pFileName, "rb" );
     if ( pFile == NULL )
     {
@@ -521,11 +552,11 @@ int Scl_LibertyFileSize( char * pFileName )
     fclose( pFile );
     return nFileSize;
 }
-char * Scl_LibertyFileContents( char * pFileName, int nContents )
+char * Scl_LibertyFileContents( char * pFileName, long nContents )
 {
     FILE * pFile = fopen( pFileName, "rb" );
     char * pContents = ABC_ALLOC( char, nContents+1 );
-    int RetValue = 0;
+    long RetValue = 0;
     RetValue = fread( pContents, nContents, 1, pFile );
     fclose( pFile );
     pContents[nContents] = 0;
@@ -534,7 +565,7 @@ char * Scl_LibertyFileContents( char * pFileName, int nContents )
 void Scl_LibertyStringDump( char * pFileName, Vec_Str_t * vStr )
 {
     FILE * pFile = fopen( pFileName, "wb" );
-    int RetValue = 0;
+    long RetValue = 0;
     if ( pFile == NULL )
     {
         printf( "Scl_LibertyStringDump(): The output file is unavailable.\n" );
@@ -558,7 +589,7 @@ void Scl_LibertyStringDump( char * pFileName, Vec_Str_t * vStr )
 Scl_Tree_t * Scl_LibertyStart( char * pFileName )
 {
     Scl_Tree_t * p;
-    int RetValue;
+    long RetValue;
     // read the file into the buffer
     Scl_LibertyFixFileName( pFileName );
     RetValue = Scl_LibertyFileSize( pFileName );
@@ -635,12 +666,20 @@ int Scl_LibertyReadCellIsFlop( Scl_Tree_t * p, Scl_Item_t * pCell )
             return 1;
     return 0;
 }
-int Scl_LibertyReadCellIsDontUse( Scl_Tree_t * p, Scl_Item_t * pCell )
+int Scl_LibertyReadCellIsDontUse( Scl_Tree_t * p, Scl_Item_t * pCell, SC_DontUse dont_use )
 {
     Scl_Item_t * pAttr;
     Scl_ItemForEachChild( p, pCell, pAttr )
+    {
         if ( !Scl_LibertyCompare(p, pAttr->Key, "dont_use") )
             return 1;
+        const char * cell_name = Scl_LibertyReadString(p, pCell->Head);
+        for (int i = 0; i < dont_use.size; i++) {
+            if (Scl_LibertyGlobMatch(dont_use.dont_use_list[i], cell_name)) {
+                return 1;
+            }
+        }
+    }
     return 0;
 }
 char * Scl_LibertyReadCellArea( Scl_Tree_t * p, Scl_Item_t * pCell )
@@ -682,10 +721,10 @@ int Scl_LibertyReadCellIsThreeState( Scl_Tree_t * p, Scl_Item_t * pCell )
             return 1;
     return 0;
 }
-int Scl_LibertyReadCellOutputNum( Scl_Tree_t * p, Scl_Item_t * pCell )
+long Scl_LibertyReadCellOutputNum( Scl_Tree_t * p, Scl_Item_t * pCell )
 {
     Scl_Item_t * pPin;
-    int Counter = 0;
+    long Counter = 0;
     Scl_ItemForEachChildName( p, pCell, pPin, "pin" )
         if ( Scl_LibertyReadPinFormula(p, pPin) )
             Counter++;
@@ -703,7 +742,7 @@ int Scl_LibertyReadCellOutputNum( Scl_Tree_t * p, Scl_Item_t * pCell )
   SeeAlso     []
 
 ***********************************************************************/
-Vec_Str_t * Scl_LibertyReadGenlibStr( Scl_Tree_t * p, int fVerbose )
+Vec_Str_t * Scl_LibertyReadGenlibStr( Scl_Tree_t * p, int fVerbose, SC_DontUse dont_use )
 {
     Vec_Str_t * vStr;
     Scl_Item_t * pCell, * pOutput, * pInput;
@@ -718,7 +757,7 @@ Vec_Str_t * Scl_LibertyReadGenlibStr( Scl_Tree_t * p, int fVerbose )
             if ( fVerbose )  printf( "Scl_LibertyReadGenlib() skipped sequential cell \"%s\".\n", Scl_LibertyReadString(p, pCell->Head) );
             continue;
         }
-        if ( Scl_LibertyReadCellIsDontUse(p, pCell) )
+        if ( Scl_LibertyReadCellIsDontUse(p, pCell, dont_use) )
         {
             if ( fVerbose )  printf( "Scl_LibertyReadGenlib() skipped cell \"%s\" due to dont_use attribute.\n", Scl_LibertyReadString(p, pCell->Head) );
             continue;
@@ -768,20 +807,6 @@ Vec_Str_t * Scl_LibertyReadGenlibStr( Scl_Tree_t * p, int fVerbose )
 //    printf( "%s", Vec_StrArray(vStr) );
     return vStr;
 }
-Vec_Str_t * Scl_LibertyParseGenlibStr( char * pFileName, int fVerbose )
-{
-    Scl_Tree_t * p;
-    Vec_Str_t * vStr;
-    p = Scl_LibertyParse( pFileName, fVerbose );
-    if ( p == NULL )
-        return NULL;
-//    Scl_LibertyRead( p, "temp_.lib" );
-    vStr = Scl_LibertyReadGenlibStr( p, fVerbose );
-    Scl_LibertyStop( p, fVerbose );
-//    Scl_LibertyStringDump( "test_genlib.lib", vStr );
-    return vStr;
-}
-
 
 /**Function*************************************************************
 
@@ -858,7 +883,7 @@ int Scl_LibertyReadTimeUnit( Scl_Tree_t * p )
             return 12;
         break;
     }
-    printf( "Libery parser cannot read \"time_unit\".  Assuming   time_unit : \"1ns\".\n" );
+    printf( "Liberty parser cannot read \"time_unit\".  Assuming   time_unit : \"1ns\".\n" );
     return 9;
 }
 void Scl_LibertyReadLoadUnit( Scl_Tree_t * p, Vec_Str_t * vOut )
@@ -878,7 +903,7 @@ void Scl_LibertyReadLoadUnit( Scl_Tree_t * p, Vec_Str_t * vOut )
         else break;
         return;
     }
-    printf( "Libery parser cannot read \"capacitive_load_unit\". Assuming   capacitive_load_unit(1, pf).\n" );
+    printf( "Liberty parser cannot read \"capacitive_load_unit\". Assuming   capacitive_load_unit(1, pf).\n" );
     Vec_StrPutF_( vOut, 1.0 );
     Vec_StrPutI_( vOut, 12 );
 }
@@ -1429,7 +1454,7 @@ Vec_Ptr_t * Scl_LibertyReadTemplates( Scl_Tree_t * p )
 //    Scl_LibertyPrintTemplates( vRes );
     return vRes;
 }
-Vec_Str_t * Scl_LibertyReadSclStr( Scl_Tree_t * p, int fVerbose, int fVeryVerbose )
+Vec_Str_t * Scl_LibertyReadSclStr( Scl_Tree_t * p, int fVerbose, int fVeryVerbose, SC_DontUse dont_use )
 {
     int fUseFirstTable = 0;
     Vec_Str_t * vOut;
@@ -1472,7 +1497,7 @@ Vec_Str_t * Scl_LibertyReadSclStr( Scl_Tree_t * p, int fVerbose, int fVeryVerbos
             nSkipped[0]++;
             continue;
         }
-        if ( Scl_LibertyReadCellIsDontUse(p, pCell) )
+        if ( Scl_LibertyReadCellIsDontUse(p, pCell, dont_use) )
         {
             if ( fVeryVerbose )  printf( "Scl_LibertyReadGenlib() skipped cell \"%s\" due to dont_use attribute.\n", Scl_LibertyReadString(p, pCell->Head) );
             nSkipped[3]++;
@@ -1500,7 +1525,7 @@ Vec_Str_t * Scl_LibertyReadSclStr( Scl_Tree_t * p, int fVerbose, int fVeryVerbos
     {
         if ( Scl_LibertyReadCellIsFlop(p, pCell) )
             continue;
-        if ( Scl_LibertyReadCellIsDontUse(p, pCell) )
+        if ( Scl_LibertyReadCellIsDontUse(p, pCell, dont_use) )
             continue;
         if ( Scl_LibertyReadCellIsThreeState(p, pCell) )
             continue;
@@ -1677,7 +1702,7 @@ Vec_Str_t * Scl_LibertyReadSclStr( Scl_Tree_t * p, int fVerbose, int fVeryVerbos
     }
     return vOut;
 }
-SC_Lib * Abc_SclReadLiberty( char * pFileName, int fVerbose, int fVeryVerbose )
+SC_Lib * Abc_SclReadLiberty( char * pFileName, int fVerbose, int fVeryVerbose, SC_DontUse dont_use )
 {
     SC_Lib * pLib;
     Scl_Tree_t * p;
@@ -1687,7 +1712,7 @@ SC_Lib * Abc_SclReadLiberty( char * pFileName, int fVerbose, int fVeryVerbose )
         return NULL;
 //    Scl_LibertyParseDump( p, "temp_.lib" );
     // collect relevant data
-    vStr = Scl_LibertyReadSclStr( p, fVerbose, fVeryVerbose );
+    vStr = Scl_LibertyReadSclStr( p, fVerbose, fVeryVerbose, dont_use );
     Scl_LibertyStop( p, fVeryVerbose );
     if ( vStr == NULL )
         return NULL;
@@ -1725,7 +1750,8 @@ void Scl_LibertyTest()
     if ( p == NULL )
         return;
 //    Scl_LibertyParseDump( p, "temp_.lib" );
-    vStr = Scl_LibertyReadSclStr( p, fVerbose, fVeryVerbose );
+    SC_DontUse dont_use = {0};
+    vStr = Scl_LibertyReadSclStr( p, fVerbose, fVeryVerbose, dont_use);
     Scl_LibertyStringDump( "test_scl.lib", vStr );
     Vec_StrFree( vStr );
     Scl_LibertyStop( p, fVerbose );

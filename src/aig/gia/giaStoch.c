@@ -1,6 +1,6 @@
 /**CFile****************************************************************
 
-  FileName    [giaDeep.c]
+  FileName    [giaStoch.c]
 
   SystemName  [ABC: Logic synthesis and verification system.]
 
@@ -14,13 +14,20 @@
 
   Date        [Ver. 1.0. Started - June 20, 2005.]
 
-  Revision    [$Id: giaDeep.c,v 1.00 2005/06/20 00:00:00 alanmi Exp $]
+  Revision    [$Id: giaStoch.c,v 1.00 2005/06/20 00:00:00 alanmi Exp $]
 
 ***********************************************************************/
 
 #include "gia.h"
 #include "base/main/main.h"
 #include "base/cmd/cmd.h"
+
+#ifdef WIN32
+#include <process.h> 
+#define unlink _unlink
+#else
+#include <unistd.h>
+#endif
 
 ABC_NAMESPACE_IMPL_START
 
@@ -31,6 +38,164 @@ ABC_NAMESPACE_IMPL_START
 ////////////////////////////////////////////////////////////////////////
 ///                     FUNCTION DEFINITIONS                         ///
 ////////////////////////////////////////////////////////////////////////
+
+/**Function*************************************************************
+
+  Synopsis    [Processing on a single core.]
+
+  Description []
+               
+  SideEffects []
+
+  SeeAlso     []
+
+***********************************************************************/
+Gia_Man_t * Gia_StochProcessSingle( Gia_Man_t * p, char * pScript, int Rand, int TimeSecs )
+{
+    Gia_Man_t * pTemp, * pNew = Gia_ManDup( p );
+    Abc_FrameUpdateGia( Abc_FrameGetGlobalFrame(), Gia_ManDup(p) );
+    if ( Abc_FrameIsBatchMode() )
+    {
+        if ( Cmd_CommandExecute(Abc_FrameGetGlobalFrame(), pScript) )
+        {
+            Abc_Print( 1, "Something did not work out with the command \"%s\".\n", pScript );
+            return NULL;
+        }
+    }
+    else
+    {
+        Abc_FrameSetBatchMode( 1 );
+        if ( Cmd_CommandExecute(Abc_FrameGetGlobalFrame(), pScript) )
+        {
+            Abc_Print( 1, "Something did not work out with the command \"%s\".\n", pScript );
+            return NULL;
+        }
+        Abc_FrameSetBatchMode( 0 );
+    }
+    pTemp = Abc_FrameReadGia(Abc_FrameGetGlobalFrame());
+    if ( Gia_ManAndNum(pNew) > Gia_ManAndNum(pTemp) )
+    {
+        Gia_ManStop( pNew );
+        pNew = Gia_ManDup( pTemp );
+    }
+    return pNew;
+}
+void Gia_StochProcessArray( Vec_Ptr_t * vGias, char * pScript, int TimeSecs, int fVerbose )
+{
+    Gia_Man_t * pGia, * pNew; int i;
+    Vec_Int_t * vRands = Vec_IntAlloc( Vec_PtrSize(vGias) ); 
+    Abc_Random(1);
+    for ( i = 0; i < Vec_PtrSize(vGias); i++ )
+        Vec_IntPush( vRands, Abc_Random(0) % 0x1000000 );
+    Vec_PtrForEachEntry( Gia_Man_t *, vGias, pGia, i ) 
+    {
+        pNew = Gia_StochProcessSingle( pGia, pScript, Vec_IntEntry(vRands, i), TimeSecs );
+        Gia_ManStop( pGia );
+        Vec_PtrWriteEntry( vGias, i, pNew );
+    }
+    Vec_IntFree( vRands );
+}
+
+/**Function*************************************************************
+
+  Synopsis    [Processing on many cores.]
+
+  Description []
+               
+  SideEffects []
+
+  SeeAlso     []
+
+***********************************************************************/
+Gia_Man_t * Gia_StochProcessOne( Gia_Man_t * p, char * pScript, int Rand, int TimeSecs )
+{
+    Gia_Man_t * pNew;
+    char FileName[100], Command[1000];
+    sprintf( FileName, "%06x.aig", Rand );
+    Gia_AigerWrite( p, FileName, 0, 0, 0 );
+    sprintf( Command, "./abc -q \"&read %s; %s; &write %s\"", FileName, pScript, FileName );
+#if defined(__wasm)
+    if ( 1 )
+#else
+    if ( system( (char *)Command ) )    
+#endif
+    {
+        fprintf( stderr, "The following command has returned non-zero exit status:\n" );
+        fprintf( stderr, "\"%s\"\n", (char *)Command );
+        fprintf( stderr, "Sorry for the inconvenience.\n" );
+        fflush( stdout );
+        unlink( FileName );
+        return Gia_ManDup(p);
+    }    
+    pNew = Gia_AigerRead( FileName, 0, 0, 0 );
+    unlink( FileName );
+    if ( pNew && Gia_ManAndNum(pNew) < Gia_ManAndNum(p) )
+        return pNew;
+    Gia_ManStopP( &pNew );
+    return Gia_ManDup(p);
+}
+
+/**Function*************************************************************
+
+  Synopsis    [Generic concurrent processing.]
+
+  Description [User-defined problem-specific data and the way to process it.]
+               
+  SideEffects []
+
+  SeeAlso     []
+
+***********************************************************************/
+
+typedef struct StochSynData_t_
+{
+    Gia_Man_t *  pIn;
+    Gia_Man_t *  pOut;
+    char *       pScript;
+    int          Rand;
+    int          TimeOut;
+} StochSynData_t;
+
+int Gia_StochProcess1( void * p )
+{
+    StochSynData_t * pData = (StochSynData_t *)p;
+    assert( pData->pIn != NULL );
+    assert( pData->pOut == NULL );
+    pData->pOut = Gia_StochProcessOne( pData->pIn, pData->pScript, pData->Rand, pData->TimeOut );
+    return 1;
+}
+
+void Gia_StochProcess( Vec_Ptr_t * vGias, char * pScript, int nProcs, int TimeSecs, int fVerbose )
+{
+    if ( nProcs <= 2 ) {
+        if ( fVerbose )
+            printf( "Running non-concurrent synthesis.\n" ), fflush(stdout);            
+        Gia_StochProcessArray( vGias, pScript, TimeSecs, fVerbose );
+        return;
+    }
+    StochSynData_t * pData = ABC_CALLOC( StochSynData_t, Vec_PtrSize(vGias) );
+    Vec_Ptr_t * vData = Vec_PtrAlloc( Vec_PtrSize(vGias) ); 
+    Gia_Man_t * pGia; int i;
+    Abc_Random(1);
+    Vec_PtrForEachEntry( Gia_Man_t *, vGias, pGia, i ) {
+        pData[i].pIn     = pGia;
+        pData[i].pOut    = NULL;
+        pData[i].pScript = pScript;
+        pData[i].Rand    = Abc_Random(0) % 0x1000000;
+        pData[i].TimeOut = TimeSecs;
+        Vec_PtrPush( vData, pData+i );
+    }
+    if ( fVerbose )
+        printf( "Running concurrent synthesis with %d processes.\n", nProcs ), fflush(stdout);
+    Util_ProcessThreads( Gia_StochProcess1, vData, nProcs, TimeSecs, fVerbose );
+    // replace old AIGs by new AIGs
+    Vec_PtrForEachEntry( Gia_Man_t *, vGias, pGia, i ) {
+        Gia_ManStop( pGia );
+        Vec_PtrWriteEntry( vGias, i, pData[i].pOut );
+    }
+    Vec_PtrFree( vData );
+    ABC_FREE( pData );
+}
 
 /**Function*************************************************************
 
@@ -184,7 +349,7 @@ Gia_Man_t * Gia_ManDupDivideOne( Gia_Man_t * p, Vec_Int_t * vCis, Vec_Int_t * vA
     pNew->vMapping = vMapping;
     return pNew;
 }
-Vec_Ptr_t * Gia_ManDupDivide( Gia_Man_t * p, Vec_Wec_t * vCis, Vec_Wec_t * vAnds, Vec_Wec_t * vCos, char * pScript )
+Vec_Ptr_t * Gia_ManDupDivide( Gia_Man_t * p, Vec_Wec_t * vCis, Vec_Wec_t * vAnds, Vec_Wec_t * vCos, char * pScript, int nProcs, int TimeOut )
 {
     Vec_Ptr_t * vAigs = Vec_PtrAlloc( Vec_WecSize(vCis) );  int i;
     for ( i = 0; i < Vec_WecSize(vCis); i++ )
@@ -192,7 +357,8 @@ Vec_Ptr_t * Gia_ManDupDivide( Gia_Man_t * p, Vec_Wec_t * vCis, Vec_Wec_t * vAnds
         Gia_ManCollectNodes( p, Vec_WecEntry(vCis, i), Vec_WecEntry(vAnds, i), Vec_WecEntry(vCos, i) );
         Vec_PtrPush( vAigs, Gia_ManDupDivideOne(p, Vec_WecEntry(vCis, i), Vec_WecEntry(vAnds, i), Vec_WecEntry(vCos, i)) );
     }
-    Gia_ManStochSynthesis( vAigs, pScript );
+    //Gia_ManStochSynthesis( vAigs, pScript );
+    Gia_StochProcess( vAigs, pScript, nProcs, TimeOut, 0 );
     return vAigs;
 }
 Gia_Man_t * Gia_ManDupStitch( Gia_Man_t * p, Vec_Wec_t * vCis, Vec_Wec_t * vAnds, Vec_Wec_t * vCos, Vec_Ptr_t * vAigs, int fHash )
@@ -388,7 +554,7 @@ Vec_Wec_t * Gia_ManStochOutputs( Gia_Man_t * p, Vec_Wec_t * vAnds )
   SeeAlso     []
 
 ***********************************************************************/
-void Gia_ManStochSyn( int nMaxSize, int nIters, int TimeOut, int Seed, int fVerbose, char * pScript )
+void Gia_ManStochSyn( int nMaxSize, int nIters, int TimeOut, int Seed, int fVerbose, char * pScript, int nProcs )
 {
     abctime nTimeToStop  = TimeOut ? Abc_Clock() + TimeOut * CLOCKS_PER_SEC : 0;
     abctime clkStart     = Abc_Clock();
@@ -407,7 +573,7 @@ void Gia_ManStochSyn( int nMaxSize, int nIters, int TimeOut, int Seed, int fVerb
         Vec_Wec_t * vAnds = Gia_ManStochNodes( pGia, nMaxSize, Abc_Random(0) & 0x7FFFFFFF );
         Vec_Wec_t * vIns  = Gia_ManStochInputs( pGia, vAnds );
         Vec_Wec_t * vOuts = Gia_ManStochOutputs( pGia, vAnds );
-        Vec_Ptr_t * vAigs = Gia_ManDupDivide( pGia, vIns, vAnds, vOuts, pScript );
+        Vec_Ptr_t * vAigs = Gia_ManDupDivide( pGia, vIns, vAnds, vOuts, pScript, nProcs, TimeOut );
         Gia_Man_t * pNew  = Gia_ManDupStitchMap( pGia, vIns, vAnds, vOuts, vAigs );
         int fMapped = Gia_ManHasMapping(pGia) && Gia_ManHasMapping(pNew);
         Abc_FrameUpdateGia( Abc_FrameGetGlobalFrame(), pNew );

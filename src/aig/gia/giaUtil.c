@@ -48,8 +48,13 @@ ABC_NAMESPACE_IMPL_START
 ***********************************************************************/
 unsigned Gia_ManRandom( int fReset )
 {
+#ifdef _MSC_VER
     static unsigned int m_z = NUMBER1;
     static unsigned int m_w = NUMBER2;
+#else
+    static __thread unsigned int m_z = NUMBER1;
+    static __thread unsigned int m_w = NUMBER2;
+#endif    
     if ( fReset )
     {
         m_z = NUMBER1;
@@ -3161,6 +3166,307 @@ void Gia_ManPrintArray( Gia_Man_t * p )
     printf( "};\n" );
 
 }
+
+
+/**Function*************************************************************
+
+  Synopsis    []
+
+  Description []
+
+  SideEffects []
+
+  SeeAlso     []
+
+***********************************************************************/
+int Gia_GetMValue( int i, int nIns, int Mint, unsigned Truth )
+{
+    assert( i >= 0 && i < 16 );
+    if ( i < nIns )
+        return (Mint >> i) & 1;
+    if ( i == nIns )
+    {
+        if ( Mint < (1 << nIns) )
+            return (Truth >> Mint) & 1;
+        else 
+            return ((Truth >> (Mint-(1 << nIns))) & 1) == 0;
+    }
+    else
+        return 1;
+}
+void Gia_ManTestProblem()
+{
+    unsigned Truth = 0xFE;
+    int i, j, k, c, nIns = 3, nAux = 3;
+    int nTotal = nIns + 1 + nAux;
+    int nPairs = nTotal * (nTotal - 1) / 2;
+    int nMints = (1 << (nIns+1));
+    int M[64][100] = {{0}};
+    float Value[64] = {0};
+    float Solution[100] = {0};
+    assert( nMints <= 64 );
+    assert( nPairs <= 100 );
+    // 7 nodes: 3 inputs + 1 output + 3 aux 
+    // 7*6/2 = 21 pairs
+    // 16 minterms
+    for ( k = 0; k < nMints; k++ )
+    {
+        for ( i = c = 0; i < nTotal; i++ )
+        for ( j = i+1; j < nTotal; j++ )    
+        {
+            int iVal = Gia_GetMValue( i, nIns, k, Truth );
+            int jVal = Gia_GetMValue( j, nIns, k, Truth );
+            M[k][c++] = iVal == jVal ? 1 : -1;
+        }
+        Value[k] = k < (1 << nIns) ? -1 : 1;
+        assert( c == nPairs ); 
+    }
+
+    for ( k = 0; k < nMints; k++ )
+    {
+        for ( c = 0; c < nPairs; c++ )
+           printf( "%2d ", M[k][c] );
+        printf( "%3f\n", Value[k] );
+    }
+
+    // solve
+    float Delta = 0.02;
+    for ( i = 0; i < 100; i++ )
+    {
+        float Error = 0;
+        for ( k = 0; k < nMints; k++ )
+            Error += Value[k] > 0 ? Value[k] : -Value[k];
+        printf( "Round %3d : Error = %5f    ", i, Error );
+        for ( c = 0; c < nPairs; c++ )
+            printf( "%2f ", Solution[c] );
+        printf( "\n" );
+
+        //if ( Error < 1 )
+        //   Delta /= 10;
+
+        for ( c = 0; c < nPairs; c++ )
+        {
+            int Count = 0;
+            for ( k = 0; k < nMints; k++ )
+               if ( (M[k][c] > 0 && Value[k] > 0) || (M[k][c] < 0 && Value[k] < 0) )
+                   Count++;
+               else
+                   Count--;
+            if ( Count == 0 )
+               continue;
+            printf( "Count = %3d  ", Count );
+            if ( Count > 0 )
+            {
+                printf( "Increasing %d by %f\n", c, Delta );
+                Solution[c] += Delta;
+                for ( k = 0; k < nMints; k++ )
+                    if ( M[k][c] > 0 )
+                        Value[k] -= Delta;
+                    else
+                        Value[k] -= Delta;
+            }
+            else
+            {
+                printf( "Reducing %d by %f\n", c, Delta );
+                Solution[c] -= Delta;
+                for ( k = 0; k < nMints; k++ )
+                    if ( M[k][c] > 0 )
+                        Value[k] += Delta;
+                    else
+                        Value[k] += Delta;
+            }            
+        }
+    }
+}
+
+/**Function*************************************************************
+
+  Synopsis    []
+
+  Description []
+
+  SideEffects []
+
+  SeeAlso     []
+
+***********************************************************************/
+Vec_Int_t * Gia_GenDecoder( Gia_Man_t * p, int * pLits, int nLits )
+{
+    if ( nLits == 1 )
+    {
+        Vec_Int_t * vRes = Vec_IntAlloc( 2 );
+        Vec_IntPush( vRes, Abc_LitNot(pLits[0]) );
+        Vec_IntPush( vRes, pLits[0] );
+        return vRes;
+    }
+    assert( nLits > 1 );
+    int nPart1 = nLits / 2;
+    int nPart2 = nLits - nPart1;
+    Vec_Int_t * vRes1 = Gia_GenDecoder( p, pLits, nPart1 );
+    Vec_Int_t * vRes2 = Gia_GenDecoder( p, pLits+nPart1, nPart2 );
+    Vec_Int_t * vRes = Vec_IntAlloc( Vec_IntSize(vRes1) * Vec_IntSize(vRes2) );
+    int i, k, Lit1, Lit2;
+    Vec_IntForEachEntry( vRes2, Lit2, k )
+    Vec_IntForEachEntry( vRes1, Lit1, i )
+        Vec_IntPush( vRes, Gia_ManHashAnd(p, Lit1, Lit2) );
+    Vec_IntFree( vRes1 );
+    Vec_IntFree( vRes2 );
+    return vRes;   
+}
+Gia_Man_t * Gia_ManGenMux( int nIns, char * pNums )
+{
+    Vec_Int_t * vIns  = Vec_IntAlloc( nIns );
+    Vec_Int_t * vData = Vec_IntAlloc( 1 << nIns );    
+    Gia_Man_t * p = Gia_ManStart( 4*(1 << nIns) + nIns ), * pTemp; 
+    int i, iStart = 0, nSize = 1 << nIns;
+    p->pName = Abc_UtilStrsav( "mux" );
+    for ( i = 0; i < nIns; i++ )
+        Vec_IntPush( vIns, Gia_ManAppendCi(p) );
+    for ( i = 0; i < nSize; i++ )
+        Vec_IntPush( vData, Gia_ManAppendCi(p) );
+    Gia_ManHashAlloc( p );
+    for ( i = (int)strlen(pNums)-1; i >= 0; i-- )
+    {
+        int k, b, nBits = (int)(pNums[i] - '0');
+        Vec_Int_t * vDec = Gia_GenDecoder( p, Vec_IntEntryP(vIns, iStart), nBits );
+        for ( k = 0; k < nSize; k++ )
+            Vec_IntWriteEntry( vData, k, Gia_ManHashAnd(p, Vec_IntEntry(vData, k), Vec_IntEntry(vDec, k%Vec_IntSize(vDec))) );
+        for ( b = 0; b < nBits; b++, nSize /= 2 )
+            for ( k = 0; k < nSize/2; k++ )
+                Vec_IntWriteEntry( vData, k, Gia_ManHashOr(p, Vec_IntEntry(vData, 2*k), Vec_IntEntry(vData, 2*k+1)) );
+        Vec_IntFree( vDec );
+        iStart += nBits;
+    }
+    assert( nSize == 1 );
+    Gia_ManAppendCo( p, Vec_IntEntry(vData, 0) );
+    Vec_IntFree( vIns );
+    Vec_IntFree( vData );    
+    p = Gia_ManCleanup( pTemp = p );
+    Gia_ManStop( pTemp );
+    return p;
+}
+
+/**Function*************************************************************
+
+  Synopsis    [Returns 1 if this window has a topo error (forward path from an output to an input).]
+
+  Description []
+
+  SideEffects []
+
+  SeeAlso     []
+
+***********************************************************************/
+int Gia_ManWindowCheckTopoError_rec( Gia_Man_t * p, Gia_Obj_t * pObj )
+{
+    if ( !Gia_ObjIsAnd(pObj) )
+        return 0;
+    if ( Gia_ObjIsTravIdPrevious(p, pObj) )
+        return 1; // there is an error
+    if ( Gia_ObjIsTravIdCurrent(p, pObj) )
+        return 0; // there is no error; visited this node before
+    Gia_ObjSetTravIdPrevious(p, pObj);
+    if ( Gia_ManWindowCheckTopoError_rec(p, Gia_ObjFanin0(pObj)) || Gia_ManWindowCheckTopoError_rec(p, Gia_ObjFanin1(pObj)) )
+        return 1;
+    Gia_ObjSetTravIdCurrent(p, pObj);
+    return 0;
+}
+int Gia_ManWindowCheckTopoError( Gia_Man_t * p, Vec_Int_t * vIns, Vec_Int_t * vOuts )
+{
+    Gia_Obj_t * pObj; int i, fError = 0;
+    // outputs should be internal nodes
+    Gia_ManForEachObjVec( vOuts, p, pObj, i )
+        assert(Gia_ObjIsAnd(pObj));
+    // mark outputs
+    Gia_ManIncrementTravId( p );
+    Gia_ManForEachObjVec( vOuts, p, pObj, i )
+        Gia_ObjSetTravIdCurrent(p, pObj);
+    // start from inputs and make sure we do not reach any of the outputs
+    Gia_ManIncrementTravId( p );
+    Gia_ManForEachObjVec( vIns, p, pObj, i )
+        fError |= Gia_ManWindowCheckTopoError_rec(p, pObj);
+    return fError;
+}
+
+/**Function*************************************************************
+
+  Synopsis    [Updates the AIG after multiple windows have been optimized.]
+
+  Description []
+
+  SideEffects []
+
+  SeeAlso     []
+
+***********************************************************************/
+int Gia_ManDupInsertWindows_rec( Gia_Man_t * pNew, Gia_Man_t * p, Gia_Obj_t * pObj, Vec_Int_t * vMap, Vec_Ptr_t * vvIns, Vec_Ptr_t * vvOuts, Vec_Ptr_t * vWins )
+{
+    if ( ~pObj->Value )
+        return pObj->Value;
+    assert( Gia_ObjIsAnd(pObj) );
+    if ( Vec_IntEntry(vMap, Gia_ObjId(p, pObj)) == -1 ) // this is a regular node
+    {
+        Gia_ManDupInsertWindows_rec( pNew, p, Gia_ObjFanin0(pObj), vMap, vvIns, vvOuts, vWins );
+        Gia_ManDupInsertWindows_rec( pNew, p, Gia_ObjFanin1(pObj), vMap, vvIns, vvOuts, vWins );
+        return pObj->Value = Gia_ManHashAnd( pNew, Gia_ObjFanin0Copy(pObj), Gia_ObjFanin1Copy(pObj) );
+    }
+    // this node is an output of a window
+    int iWin = Vec_IntEntry(vMap, Gia_ObjId(p, pObj));
+    Vec_Int_t * vIns  = (Vec_Int_t *)Vec_PtrEntry(vvIns, iWin);
+    Vec_Int_t * vOuts = (Vec_Int_t *)Vec_PtrEntry(vvOuts, iWin);
+    Gia_Man_t * pWin  = (Gia_Man_t *)Vec_PtrEntry(vWins, iWin);
+    // build transinvite fanins of window inputs
+    Gia_Obj_t * pNode; int i;
+    Gia_ManConst0(pWin)->Value = 0;
+    Gia_ManForEachObjVec( vIns, p, pNode, i )
+        Gia_ManPi(pWin, i)->Value = Gia_ManDupInsertWindows_rec( pNew, p, pNode, vMap, vvIns, vvOuts, vWins );
+    // add window nodes
+    Gia_ManForEachAnd( pWin, pNode, i )
+        pNode->Value = Gia_ManHashAnd( pNew, Gia_ObjFanin0Copy(pNode), Gia_ObjFanin1Copy(pNode) );
+    // transfer to window outputs
+    Gia_ManForEachObjVec( vOuts, p, pNode, i )
+        pNode->Value = Gia_ObjFanin0Copy(Gia_ManPo(pWin, i));
+    assert( ~pObj->Value );
+    return pObj->Value;
+}
+Gia_Man_t * Gia_ManDupInsertWindows( Gia_Man_t * p, Vec_Ptr_t * vvIns, Vec_Ptr_t * vvOuts, Vec_Ptr_t * vWins )
+{
+    // check consistency of input data
+    Gia_Man_t * pNew, * pTemp; Gia_Obj_t * pObj; int i, k, iNode;
+    Vec_PtrForEachEntry( Gia_Man_t *, vWins, pTemp, i ) {
+        Vec_Int_t * vIns  = (Vec_Int_t *)Vec_PtrEntry(vvIns, i);
+        Vec_Int_t * vOuts = (Vec_Int_t *)Vec_PtrEntry(vvOuts, i);
+        assert( Vec_IntSize(vIns)  == Gia_ManPiNum(pTemp) );
+        assert( Vec_IntSize(vOuts) == Gia_ManPoNum(pTemp) );
+        assert( !Gia_ManWindowCheckTopoError(p, vIns, vOuts) );        
+    }
+    // create mapping of window outputs into window IDs
+    Vec_Int_t * vMap = Vec_IntStartFull( Gia_ManObjNum(p) ), * vOuts;
+    Vec_PtrForEachEntry( Vec_Int_t *, vvOuts, vOuts, i )
+        Vec_IntForEachEntry( vOuts, iNode, k )
+            Vec_IntWriteEntry( vMap, iNode, i );
+    // create the resulting AIG by performing DFS from the POs of the original AIG
+    // it goes recursively through original nodes and windows until it reaches the PIs of the original AIG
+    pNew = Gia_ManStart( Gia_ManObjNum(p) );
+    pNew->pName = Abc_UtilStrsav( p->pName );
+    pNew->pSpec = Abc_UtilStrsav( p->pSpec );
+    Gia_ManHashAlloc( pNew );    
+    Gia_ManFillValue( p );
+    Gia_ManConst0(p)->Value = 0;
+    Gia_ManForEachCi( p, pObj, i )
+        pObj->Value = Gia_ManAppendCi(pNew);
+    Gia_ManForEachCo( p, pObj, i )
+        Gia_ManDupInsertWindows_rec( pNew, p, Gia_ObjFanin0(pObj), vMap, vvIns, vvOuts, vWins );
+    Gia_ManForEachCo( p, pObj, i )
+        Gia_ManAppendCo( pNew, Gia_ObjFanin0Copy(pObj) );
+    // cleanup and return
+    Vec_IntFree( vMap );
+    pNew = Gia_ManCleanup( pTemp = pNew );
+    Gia_ManStop( pTemp );
+    //Gia_ManPrint( pNew );
+    return pNew;
+}
+
 ////////////////////////////////////////////////////////////////////////
 ///                       END OF FILE                                ///
 ////////////////////////////////////////////////////////////////////////

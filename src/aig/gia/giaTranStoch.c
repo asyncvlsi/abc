@@ -29,13 +29,18 @@
 #include <opt/sfm/sfm.h>
 #include <opt/fxu/fxu.h>
 
+#ifdef _MSC_VER
+#define unlink _unlink
+#else
+#include <unistd.h>
+#endif
+
 #ifdef ABC_USE_PTHREADS
 
 #ifdef _WIN32
 #include "../lib/pthread.h"
 #else
 #include <pthread.h>
-#include <unistd.h>
 #endif
 
 #endif
@@ -418,6 +423,10 @@ Gia_Man_t * Gia_ManTranStoch( Gia_Man_t * pGia, int nRestarts, int nHops, int nS
   if ( nVerbose )
     printf( "best: %d\n", Gia_ManAndNum( pBest ) );
   Vec_PtrFree( vpStarts );
+  ABC_FREE( pBest->pName );
+  ABC_FREE( pBest->pSpec );
+  pBest->pName = Abc_UtilStrsav( pGia->pName );
+  pBest->pSpec = Abc_UtilStrsav( pGia->pSpec );
   return pBest;
 }
 

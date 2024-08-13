@@ -325,8 +325,8 @@ static inline int      Abc_Var2Lit4( int Var, int Att )       { assert(!(Att >> 
 static inline int      Abc_Lit2Var4( int Lit )                { assert(Lit >= 0);    return Lit >> 4;         }
 static inline int      Abc_Lit2Att4( int Lit )                { assert(Lit >= 0);    return Lit & 15;         }
 
-// time counting
 typedef ABC_INT64_T abctime;
+// counting wall time
 static inline abctime Abc_Clock()
 {
 #if defined(__APPLE__) && defined(__MACH__)
@@ -334,7 +334,26 @@ static inline abctime Abc_Clock()
 #else
   #define APPLE_MACH 0
 #endif
-#if (defined(LIN) || defined(LIN64)) && !APPLE_MACH && !defined(__MINGW32__)
+#if (defined(LIN) || defined(LIN64)) && !APPLE_MACH && !defined(__MINGW32__) && !defined(__wasm)
+    struct timespec ts;
+    if ( clock_gettime(CLOCK_MONOTONIC, &ts) < 0 ) 
+        return (abctime)-1;
+    abctime res = ((abctime) ts.tv_sec) * CLOCKS_PER_SEC;
+    res += (((abctime) ts.tv_nsec) * CLOCKS_PER_SEC) / 1000000000;
+    return res;
+#else
+    return (abctime) clock();
+#endif
+}
+// counting thread time
+static inline abctime Abc_ThreadClock()
+{
+#if defined(__APPLE__) && defined(__MACH__)
+  #define APPLE_MACH (__APPLE__ & __MACH__)
+#else
+  #define APPLE_MACH 0
+#endif
+#if (defined(LIN) || defined(LIN64)) && !APPLE_MACH && !defined(__MINGW32__) && !defined(__wasm)
     struct timespec ts;
     if ( clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) < 0 ) 
         return (abctime)-1;
@@ -345,7 +364,6 @@ static inline abctime Abc_Clock()
     return (abctime) clock();
 #endif
 }
-
 
 // misc printing procedures
 enum Abc_VerbLevel
@@ -530,6 +548,9 @@ extern int *  Abc_QuickSortCost( int * pCosts, int nSize, int fDecrease );
 
 extern unsigned Abc_Random( int fReset );
 extern word     Abc_RandomW( int fReset );
+
+// pthreads
+extern void Util_ProcessThreads( int (*pUserFunc)(void *), void * vData, int nProcs, int TimeOut, int fVerbose );
 
 ABC_NAMESPACE_HEADER_END
 
