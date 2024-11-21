@@ -199,8 +199,16 @@ void Abc_SclTimeNtkPrint( SC_Man * p, int fShowAll, int fPrintPath )
         i = 0;
         while ( pObj && Abc_ObjIsNode(pObj) )
         {
+	    SC_Cell *cell = Abc_SclObjCell(pObj);
+	    const char *pname;
+            if (cell && cell->pName) {
+	      pname = cell->pName;
+	    }
+	    else {
+	      pname = "pi";
+	    }
             i++;
-            nLength = Abc_MaxInt( nLength, strlen(Abc_SclObjCell(pObj)->pName) );
+            nLength = Abc_MaxInt( nLength, strlen(pname) );
             pObj = Abc_SclFindMostCriticalFanin( p, &fRise, pObj );
         }
 
