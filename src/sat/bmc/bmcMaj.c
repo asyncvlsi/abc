@@ -953,7 +953,7 @@ void Exa_ManExactSynthesis( Bmc_EsPar_t * pPars )
         }
         if ( status == GLUCOSE_UNDEC )
         {
-            printf( "The problem timed out after %d sec.\n", pPars->RuntimeLim );
+            printf( "The solver timed out after %d sec.\n", pPars->RuntimeLim );
             break;
         }
         iMint = Exa_ManEval( p );
@@ -1228,6 +1228,61 @@ static void Exa3_ManPrintSolution( Exa3_Man_t * p, int fCompl )
     }
 }
 
+/**Function*************************************************************
+
+  Synopsis    []
+
+  Description []
+               
+  SideEffects []
+
+  SeeAlso     []
+
+***********************************************************************/
+static void Exa3_ManDumpBlif( Exa3_Man_t * p, int fCompl )
+{
+    int i, k, b, iVar;
+    char pFileName[1000];
+    sprintf( pFileName, "%s.blif", p->pPars->pTtStr );
+    FILE * pFile = fopen( pFileName, "wb" );
+    if ( pFile == NULL ) return;
+    fprintf( pFile, "# Realization of given %d-input function using %d %d-input LUTs synthesized by ABC on %s\n", p->nVars, p->nNodes, p->nLutSize, Extra_TimeStamp() );
+    fprintf( pFile, ".model %s\n", p->pPars->pTtStr );
+    fprintf( pFile, ".inputs" );
+    for ( k = 0; k < p->nVars; k++ )
+        fprintf( pFile, " %c", 'a'+k );
+    fprintf( pFile, "\n.outputs F\n" );    
+    for ( i = p->nObjs - 1; i >= p->nVars; i-- )
+    {
+        fprintf( pFile, ".names" );
+        for ( k = 0; k < p->nLutSize; k++ )
+        {
+            iVar = Exa3_ManFindFanin( p, i, k );
+            if ( iVar >= 0 && iVar < p->nVars )
+                fprintf( pFile, " %c", 'a'+iVar );
+            else
+                fprintf( pFile, " %02d", iVar );
+        }
+        if ( i == p->nObjs - 1 )
+            fprintf( pFile, " F\n" );
+        else 
+            fprintf( pFile, " %02d\n", i );
+        int iVarStart = 1 + p->LutMask*(i - p->nVars);
+        for ( k = 0; k < p->LutMask; k++ )
+        {
+            int Val = bmcg_sat_solver_read_cex_varvalue(p->pSat, iVarStart+k); 
+            if ( Val == 0 )
+                continue;
+            for ( b = 0; b < p->nLutSize; b++ )
+                fprintf( pFile, "%d", ((k+1) >> b) & 1 );
+            fprintf( pFile, " %d\n", i != p->nObjs - 1 || !fCompl );
+        }
+    }
+    fprintf( pFile, ".end\n\n" );
+    fclose( pFile );
+    printf( "Finished dumping the resulting LUT network into file \"%s\".\n", pFileName );
+}
+
 
 /**Function*************************************************************
 
@@ -1444,12 +1499,22 @@ void Exa3_ManPrint( Exa3_Man_t * p, int i, int iMint, abctime clk )
     printf( "Conf =%9d  ", bmcg_sat_solver_conflictnum(p->pSat) );
     Abc_PrintTime( 1, "Time", clk );
 }
-void Exa3_ManExactSynthesis( Bmc_EsPar_t * pPars )
+int Exa3_ManExactSynthesis( Bmc_EsPar_t * pPars )
 {
-    int i, status, iMint = 1;
+    int i, status, Res = 0, iMint = 1;
     abctime clkTotal = Abc_Clock();
     Exa3_Man_t * p; int fCompl = 0;
-    word pTruth[16]; Abc_TtReadHex( pTruth, pPars->pTtStr );
+    word pTruth[16]; 
+    if ( pPars->pSymStr ) {
+        word * pFun = Abc_TtSymFunGenerate( pPars->pSymStr, pPars->nVars );
+        pPars->pTtStr = ABC_CALLOC( char, pPars->nVars > 2 ? (1 << (pPars->nVars-2)) + 1 : 2 );
+        Extra_PrintHexadecimalString( pPars->pTtStr, (unsigned *)pFun, pPars->nVars );
+        printf( "Generated symmetric function: %s\n", pPars->pTtStr );
+        ABC_FREE( pFun );
+    }
+    if ( pPars->pTtStr )
+        Abc_TtReadHex( pTruth, pPars->pTtStr );
+    else assert( 0 );
     assert( pPars->nVars <= 10 );
     assert( pPars->nLutSize <= 6 );
     p = Exa3_ManAlloc( pPars, pTruth );
@@ -1477,15 +1542,54 @@ void Exa3_ManExactSynthesis( Bmc_EsPar_t * pPars )
     if ( pPars->fVerbose && status != GLUCOSE_UNDEC )
         Exa3_ManPrint( p, i, iMint, Abc_Clock() - clkTotal );
     if ( iMint == -1 )
-        Exa3_ManPrintSolution( p, fCompl );
+        Exa3_ManPrintSolution( p, fCompl ), Res = 1;
     else if ( status == GLUCOSE_UNDEC )
-        printf( "The problem timed out after %d sec.\n", pPars->RuntimeLim );
+        printf( "The solver timed out after %d sec.\n", pPars->RuntimeLim );
     else 
         printf( "The problem has no solution.\n" );
     printf( "Added = %d.  Tried = %d.  ", p->nUsed[1], p->nUsed[0] );
-    Exa3_ManFree( p );
     Abc_PrintTime( 1, "Total runtime", Abc_Clock() - clkTotal );
+    if ( iMint == -1 )
+        Exa3_ManDumpBlif( p, fCompl );
+    if ( pPars->pSymStr ) 
+        ABC_FREE( pPars->pTtStr );
+    Exa3_ManFree( p );
+    return Res;
 }
+void Exa3_ManExactSynthesisRand( Bmc_EsPar_t * pPars )
+{
+    int i, k, nDecs = 0, nWords = Abc_TtWordNum(pPars->nVars);
+    word * pFun = ABC_ALLOC( word, nWords );
+    Abc_Random(1);
+    printf( "\n" );
+    for ( i = 0; i < pPars->nRandFuncs; i++ ) {
+        if ( pPars->nMintNum == 0 )
+            for ( k = 0; k < nWords; k++ )
+                pFun[k] = Abc_RandomW(0);
+        else {
+            Abc_TtClear( pFun, nWords );
+            for ( k = 0; k < pPars->nMintNum; k++ ) {
+                int iMint = 0;
+                do iMint = Abc_Random(0) % (1 << pPars->nVars);
+                while ( Abc_TtGetBit(pFun, iMint) );
+                Abc_TtSetBit( pFun, iMint );
+            }
+        }
+        pPars->pTtStr = ABC_CALLOC( char, pPars->nVars > 2 ? (1 << (pPars->nVars-2)) + 1 : 2 );
+        Extra_PrintHexadecimalString( pPars->pTtStr, (unsigned *)pFun, pPars->nVars );
+        printf( "\nIteration %d : ", i );
+        if ( pPars->nMintNum )
+            printf( "Random function has %d positive minterms.", pPars->nMintNum );
+        printf( "\n" );
+        if ( pPars->fVerbose )
+            printf( "Truth table : %s\n", pPars->pTtStr );
+        nDecs += Exa3_ManExactSynthesis( pPars );
+        ABC_FREE( pPars->pTtStr );
+    }
+    printf( "Decomposable are %d (out of %d) functions (%.2f %%).\n", nDecs, pPars->nRandFuncs, 100.0*nDecs/pPars->nRandFuncs );
+    ABC_FREE( pFun );
+}
+
 
 /**Function*************************************************************
 
